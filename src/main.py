@@ -5,7 +5,6 @@ import ConfigParser
 import os
 
 class GVCommanderRC():
-
 	def __init__(self):
 		self._config = None
 
