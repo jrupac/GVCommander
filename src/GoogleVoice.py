@@ -1,4 +1,6 @@
 import BeautifulSoup
+import re
+import json
 
 from urllib import urlencode
 from httplib import HTTPSConnection
@@ -27,8 +29,11 @@ class GoogleVoice(object):
 
         clientLogin = self.google.getresponse()
 
-        authDict = dict(l.split('=') for l in clientLogin.read().strip().split('\n'))
-        self._auth = authDict['Auth']
+        tt = clientLogin.read().strip().split('\n')
+
+        for s in tt:
+            if s.startswith("Auth="):
+                self._auth = s[5:]
 
         self.google.request('GET', '/voice/b/0', None, {
           'Authorization': 'GoogleLogin auth='+self._auth,
@@ -49,11 +54,11 @@ class GoogleVoice(object):
         arguments['_rnr_se'] = self._rnr_se
 
         self.google.request('POST', path, urlencode(arguments), { 
-          'Content-type': 'application/x-www-form-urlencoded', 
+          'Content-type': 'application/x-www-form-urlencoded;charset=utf-8', 
           'Authorization': 'GoogleLogin auth=' + self._auth,
           })
 
-        return self.google.getresponse().read()
+        return self.google.getresponse()
 
     def __http_GET(self, path, **arguments):
         """ 
@@ -62,7 +67,7 @@ class GoogleVoice(object):
         """
 
         self.google.request('GET', path, None, {
-          'Content-type': 'application/x-www-form-urlencoded', 
+          'Content-type': 'application/x-www-form-urlencoded;charset=utf-8', 
           'Authorization': 'GoogleLogin auth=' + self._auth,
           })
 
@@ -73,65 +78,47 @@ class GoogleVoice(object):
         Send an SMS to the specified number with the specified message.
         """
 
-        self.__http_POST('/voice/sms/send/', id='', phoneNumber=recipient, text=message)
+        return self.__http_POST('/voice/sms/send/', id='', 
+                                phoneNumber=recipient, text=message)
         
-    def check_sms(self, last_seen):
+    def check_sms(self):
         """
-        Retrieve all new messages intelligently (?!).
+        Enumerate all messages currently in the inbox.
         """
 
         resp = self.__http_GET('/voice/inbox/recent/inbox')
-        start_index = -1
-        new_messages = []
+        all_messages = {}
+        numbers = {}
 
-        # Get rid of the initial irrelevant data
+        # Parse the JSON at the top of the page to collect phone numbers
+        ret = json.loads(resp[resp.index("<![CDATA[")+8:resp.index("]></json>")])
+
+        # Enumerate phone numbers of recepients in conversations, indexed by
+        # the ID of the conversation
+        for key in ret[0]['messages'].keys():
+            numbers[key] = ret[0]['messages'][key]['phoneNumber']
+
+        # Now skip over that part into the real content
         resp = resp[resp.index("<div"):]
 
         # Soupify me, captain!
         soup = BeautifulSoup.BeautifulSoup(resp)
 
-        # Over all messages in the inbox
-        for s in soup.findAll('div', {"class" : "gc-message-transcript"}):  
+        # Iterate over all conversations in the inbox
+        for i in soup.findAll('div', {"id" : re.compile(".*")}):
+            message_list = list()
 
-            if (isinstance(s, BeautifulSoup.Tag)):
-                # Over all messages in latest conversation
-                for index,tag in enumerate(s.findAll('div', {"class" : "gc-message-sms-row"})):
+            # Iterate over all messages in current conversation
+            for tag in i.findAll('div', {"class" : "gc-message-sms-row"}):
+                if not isinstance(tag, BeautifulSoup.Tag):
+                    continue
 
-                    # Just the tags
-                    if (isinstance(tag, BeautifulSoup.Tag)):
-                        
-                        author = str(tag.find('span', 'gc-message-sms-from').string).strip()
-                        text = str(tag.find('span', 'gc-message-sms-text').string)
-                        time = str(tag.find('span', 'gc-message-sms-time').string)
+                message_list.append({'author' : str(tag.find('span', 'gc-message-sms-from').string).strip(),
+                                     'time'   : str(tag.find('span', 'gc-message-sms-time').string),
+                                     'text'   : str(tag.find('span', 'gc-message-sms-text').string)})
 
-                        # If the message is from "Me", then skip it
-                        if author == 'Me:':
-                            continue
+            all_messages[i['id']] = message_list
 
-                        # Collect all messages seen
-                        new_messages.append(text)
-
-                        # This is the latest message from last time, so everything
-                        # after this is new
-                        if start_index == -1 and text == last_seen:
-                            start_index = index
-                        
-            # We want just the first (latest)
-            break
-
-        # TODO: This is retarded. What happens when we keep switching between
-        # conversations?!
-        # If we're on the same conversation as last time, pick off from where
-        # we left off
-        if start_index > -1:
-            new_messages = new_messages[start_index:]
-
-        # If first time running, then just return the last message
-        if last_seen == '':
-            if len(new_messages) > 0:
-                return [new_messages[-1]]
-            return new_messages
-
-        # Otherwise return everything new (possibly empty)
-        return new_messages
+        # Return the numbers dict and the messages dict
+        return numbers, all_messages
 

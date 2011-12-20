@@ -1,80 +1,124 @@
-from XMPP_Client import XMPP_Client
+import re
+import time
+
 from GoogleVoice import GoogleVoice
+from Config import Config
 
-import ConfigParser
-import os
+#from google.appengine.api import taskqueue
+from google.appengine.api import xmpp
+from google.appengine.ext import webapp
+from google.appengine.ext.webapp.util import run_wsgi_app
+from google.appengine.runtime import DeadlineExceededError
+from HTMLParser import HTMLParser
 
-class GVCommanderRC():
-	def __init__(self):
-		self._config = None
+class XMPPHandler(webapp.RequestHandler):
+    def post(self):
+        global KILL_SWITCH
+        global XMPP_USERNAME
 
-	def get_gv_username(self):
-		return self._GetOption('gv_username')
+        message = xmpp.Message(self.request.POST)
 
-	def get_gv_password(self):
-		return self._GetOption('gv_password')
+        # Filter out random requests
+        if not message.sender.startswith(GV_USERNAME):
+            return
 
-	def get_xmpp_from(self):
-		return self._GetOption('xmpp_from')
+        XMPP_USERNAME = message.sender
+        #hostname = self.request.host[:self.request.host.index('.')]
+        hostname='gv-commander'
 
-	def get_xmpp_to(self):
-		return self._GetOption('xmpp_to')
+        # Allow for starting and stopping via special address
+        if message.to.lower().startswith('stop@'):
+            message.reply("SMS Forwarding STOPPED.\nTo start, text to START@" + 
+                          hostname + '.appspotchat.com.')
+            KILL_SWITCH = True
+        if message.to.lower().startswith('start@'):
+            message.reply("SMS Forwarding STARTED.\nTo stop, text to STOP@" + 
+                          hostname + '.appspotchat.com.')
+            KILL_SWITCH = False
 
-	def get_xmpp_password(self):
-		return self._GetOption('xmpp_password')
+        # Forward a text message
+        result = PH.match(message.to)
+        if result:
+            xmpp.send_invite(message.sender, from_jid=message.to)
+            if voice.send_sms(result.group(0), message.body).status != 200:
+                message.reply("ERROR: Could not send message.")
 
-	def _GetOption(self, option):
-		try:
-			return self._GetConfig().get('GVCommander', option)
-		except:
-			return None
+class GVHandler(webapp.RequestHandler):
+    def get(self):
+        global OLD_MESSAGES
 
-	def _GetConfig(self):
-		if not self._config:
-		 	self._config = ConfigParser.ConfigParser()
-		 	self._config.read(os.path.expanduser('~/.gvcommanderrc'))
-		return self._config
+        if KILL_SWITCH:
+            return
+        
+        try:
+            for x in xrange(5):
+                #hostname = self.request.host[:self.request.host.index('.')]
+                hostname='gv-commander'
+
+                # Grab the current conversations and phone numbers in inbox
+                numbers, all_messages = voice.check_sms()
+
+                # First-run. Just collect everything and return
+                if OLD_MESSAGES == None:
+                    OLD_MESSAGES = dict(all_messages)
+                    return
+
+                # Iterate over all conversations currently in the inbox
+                for key in all_messages.keys():
+
+                    from_addr = numbers[key] + '@' + hostname + '.appspotchat.com'
+
+                    # This is a conversation which existed at the last poll
+                    if key in OLD_MESSAGES.keys():
+
+                        # The last message in the old list for this conversation
+                        last_old_message = OLD_MESSAGES[key][-1]
+                        last_index = -1
+                       
+                        # Find the location of the last old message in the new list
+                        for index, val in enumerate(all_messages[key]):
+                            if val == last_old_message:
+                                last_index = index
+                                break
+                        
+                        # Send off all the new messages in this conversation
+                        for message in all_messages[key][last_index+1:]:
+                            if message['author'] != 'Me:':
+                                xmpp.send_message(XMPP_USERNAME, HP.unescape(message['text']), from_jid=from_addr)
+                    # This is a completely new conversation first seen in this poll
+                    else:
+                        for message in all_messages[key]:
+                            if message['author'] != 'Me:':
+                                xmpp.send_message(XMPP_USERNAME, HP.unescape(message['text']), from_jid=from_addr)
+                
+                # Now save the new messages
+                OLD_MESSAGES = dict(all_messages)
+                time.sleep(5)
+
+        except DeadlineExceededError:
+            # Just return when we run out of time
+            pass
+
+app = webapp.WSGIApplication([('/_ah/xmpp/message/chat/', XMPPHandler), 
+                              ('/cron', GVHandler)], 
+                              debug=True)
 
 def main():
-    SLEEP_INTERVAL = 1
+    run_wsgi_app(app)
 
-    creds = GVCommanderRC()
+if __name__ == '__main__':
+    KILL_SWITCH = False
+    OLD_MESSAGES = None
 
-    XMPP_FROM = creds.get_xmpp_from()
-    XMPP_TO = creds.get_xmpp_to()
-    XMPP_PASSWD = creds.get_xmpp_password()
+    creds = Config()
 
     GV_USERNAME = creds.get_gv_username()
-    GV_PASSWORD = creds.get_gv_password()
+    XMPP_USERNAME = GV_USERNAME
+    HP = HTMLParser()
+    PH = re.compile("\+[0-9]{11}")
+
+    voice = GoogleVoice(GV_USERNAME, creds.get_gv_password())
 
     del creds
 
-    client = XMPP_Client(XMPP_FROM, XMPP_TO, XMPP_PASSWD)
-    voice = GoogleVoice(GV_USERNAME, GV_PASSWORD)
-
-    latest = ''
-    
-    # The Main Loop (R)
-    while True:
-        # Poll the Google Voice server for new messages
-        new_messages = voice.check_sms(latest)
-
-        print 'DEBUG'
-        print new_messages
-
-        if len(new_messages) > 0:
-            # Send every new message off
-            for message in new_messages:
-
-                print 'DEBUG'
-                print message
-
-                #client.send_message(message)
-
-            latest = new_messages[-1]
-        
-        # Poll the XMPP server for new messages
-        client.process(SLEEP_INTERVAL)
-
-if __name__ == '__main__':
     main()
