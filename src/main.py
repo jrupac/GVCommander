@@ -1,14 +1,13 @@
 import re
-import time
 
 from GoogleVoice import GoogleVoice
 from Config import Config
 
-#from google.appengine.api import taskqueue
+from google.appengine.api import taskqueue
 from google.appengine.api import xmpp
 from google.appengine.ext import webapp
 from google.appengine.ext.webapp.util import run_wsgi_app
-from google.appengine.runtime import DeadlineExceededError
+#from google.appengine.runtime import DeadlineExceededError
 from HTMLParser import HTMLParser
 
 class XMPPHandler(webapp.RequestHandler):
@@ -45,62 +44,73 @@ class XMPPHandler(webapp.RequestHandler):
 
 class GVHandler(webapp.RequestHandler):
     def get(self):
-        global OLD_MESSAGES
-
+        global KILL_SWITCH
         if KILL_SWITCH:
             return
         
-        try:
-            for x in xrange(5):
-                #hostname = self.request.host[:self.request.host.index('.')]
-                hostname='gv-commander'
+        taskqueue.add(url='/worker', params={'recurse' : 5})
 
-                # Grab the current conversations and phone numbers in inbox
-                numbers, all_messages = voice.check_sms()
+class TaskHandler(webapp.RequestHandler):
+    def post(self):
+        global OLD_MESSAGES
+        global KILL_SWITCH
 
-                # First-run. Just collect everything and return
-                if OLD_MESSAGES == None:
-                    OLD_MESSAGES = dict(all_messages)
-                    return
+        if KILL_SWITCH:
+            return
 
-                # Iterate over all conversations currently in the inbox
-                for key in all_messages.keys():
+        recurse_step = int(self.request.get('recurse'))
 
-                    from_addr = numbers[key] + '@' + hostname + '.appspotchat.com'
+        if recurse_step == 0:
+            return
 
-                    # This is a conversation which existed at the last poll
-                    if key in OLD_MESSAGES.keys():
+        #hostname = self.request.host[:self.request.host.index('.')]
+        hostname='gv-commander'
 
-                        # The last message in the old list for this conversation
-                        last_old_message = OLD_MESSAGES[key][-1]
-                        last_index = -1
-                       
-                        # Find the location of the last old message in the new list
-                        for index, val in enumerate(all_messages[key]):
-                            if val == last_old_message:
-                                last_index = index
-                                break
-                        
-                        # Send off all the new messages in this conversation
-                        for message in all_messages[key][last_index+1:]:
-                            if message['author'] != 'Me:':
-                                xmpp.send_message(XMPP_USERNAME, HP.unescape(message['text']), from_jid=from_addr)
-                    # This is a completely new conversation first seen in this poll
-                    else:
-                        for message in all_messages[key]:
-                            if message['author'] != 'Me:':
-                                xmpp.send_message(XMPP_USERNAME, HP.unescape(message['text']), from_jid=from_addr)
+        # Grab the current conversations and phone numbers in inbox
+        numbers, all_messages = voice.check_sms()
+
+        # First-run. Just collect everything and return
+        if OLD_MESSAGES == None:
+            OLD_MESSAGES = dict(all_messages)
+            return
+
+        # Iterate over all conversations currently in the inbox
+        for key in all_messages.keys():
+
+            from_addr = numbers[key] + '@' + hostname + '.appspotchat.com'
+
+            # This is a conversation which existed at the last poll
+            if key in OLD_MESSAGES.keys():
+
+                # The last message in the old list for this conversation
+                last_old_message = OLD_MESSAGES[key][-1]
+                last_index = -1
+               
+                # Find the location of the last old message in the new list
+                for index, val in enumerate(all_messages[key]):
+                    if val == last_old_message:
+                        last_index = index
+                        break
                 
-                # Now save the new messages
-                OLD_MESSAGES = dict(all_messages)
-                time.sleep(5)
+                # Send off all the new messages in this conversation
+                for message in all_messages[key][last_index+1:]:
+                    if message['author'] != 'Me:':
+                        xmpp.send_message(XMPP_USERNAME, HP.unescape(message['text']), from_jid=from_addr)
+            # This is a completely new conversation first seen in this poll
+            else:
+                for message in all_messages[key]:
+                    if message['author'] != 'Me:':
+                        xmpp.send_message(XMPP_USERNAME, HP.unescape(message['text']), from_jid=from_addr)
+        
+        # Now save the new messages
+        OLD_MESSAGES = dict(all_messages)
 
-        except DeadlineExceededError:
-            # Just return when we run out of time
-            pass
+        # Recursive enqueue
+        taskqueue.add(url='/worker', params={'recurse' : recurse_step - 1})
 
 app = webapp.WSGIApplication([('/_ah/xmpp/message/chat/', XMPPHandler), 
-                              ('/cron', GVHandler)], 
+                              ('/cron', GVHandler), 
+                              ('/worker', TaskHandler)], 
                               debug=True)
 
 def main():

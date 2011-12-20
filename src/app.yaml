@@ -12,3 +12,5 @@ handlers:
   script: main.py
 - url: /cron
   script: main.py
+- url: /worker
+  script: main.py
