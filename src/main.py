@@ -3,12 +3,13 @@ import re
 from GoogleVoice import GoogleVoice
 from Config import Config
 
+from HTMLParser import HTMLParser
 from google.appengine.api import taskqueue
 from google.appengine.api import xmpp
 from google.appengine.ext import webapp
 from google.appengine.ext.webapp.util import run_wsgi_app
-#from google.appengine.runtime import DeadlineExceededError
-from HTMLParser import HTMLParser
+
+HOSTNAME = '@gv-commander.appspotchat.com'
 
 class XMPPHandler(webapp.RequestHandler):
     def post(self):
@@ -22,17 +23,15 @@ class XMPPHandler(webapp.RequestHandler):
             return
 
         XMPP_USERNAME = message.sender
-        #hostname = self.request.host[:self.request.host.index('.')]
-        hostname='gv-commander'
 
         # Allow for starting and stopping via special address
         if message.to.lower().startswith('stop@'):
-            message.reply("SMS Forwarding STOPPED.\nTo start, text to START@" + 
-                          hostname + '.appspotchat.com.')
+            message.reply("SMS Forwarding STOPPED.\nTo start, text to START" + 
+                          HOSTNAME)
             KILL_SWITCH = True
         if message.to.lower().startswith('start@'):
-            message.reply("SMS Forwarding STARTED.\nTo stop, text to STOP@" + 
-                          hostname + '.appspotchat.com.')
+            message.reply("SMS Forwarding STARTED.\nTo stop, text to STOP" + 
+                          HOSTNAME)
             KILL_SWITCH = False
 
         # Forward a text message
@@ -63,9 +62,6 @@ class TaskHandler(webapp.RequestHandler):
         if recurse_step == 0:
             return
 
-        #hostname = self.request.host[:self.request.host.index('.')]
-        hostname='gv-commander'
-
         # Grab the current conversations and phone numbers in inbox
         numbers, all_messages = voice.check_sms()
 
@@ -77,7 +73,7 @@ class TaskHandler(webapp.RequestHandler):
         # Iterate over all conversations currently in the inbox
         for key in all_messages.keys():
 
-            from_addr = numbers[key] + '@' + hostname + '.appspotchat.com'
+            from_addr = numbers[key] + HOSTNAME
 
             # This is a conversation which existed at the last poll
             if key in OLD_MESSAGES.keys():
@@ -94,17 +90,22 @@ class TaskHandler(webapp.RequestHandler):
                 
                 # Send off all the new messages in this conversation
                 for message in all_messages[key][last_index+1:]:
+                    OLD_MESSAGES[key].append(message)
                     if message['author'] != 'Me:':
-                        xmpp.send_message(XMPP_USERNAME, HP.unescape(message['text']), from_jid=from_addr)
+                        xmpp.send_message(XMPP_USERNAME, 
+                                          HP.unescape(message['text']), 
+                                          from_jid=from_addr)
             # This is a completely new conversation first seen in this poll
             else:
+                new_conversation = []
                 for message in all_messages[key]:
+                    new_conversation.append(message)
                     if message['author'] != 'Me:':
-                        xmpp.send_message(XMPP_USERNAME, HP.unescape(message['text']), from_jid=from_addr)
+                        xmpp.send_message(XMPP_USERNAME, 
+                                          HP.unescape(message['text']), 
+                                          from_jid=from_addr)
+                OLD_MESSAGES[key] = new_conversation
         
-        # Now save the new messages
-        OLD_MESSAGES = dict(all_messages)
-
         # Recursive enqueue
         taskqueue.add(url='/worker', params={'recurse' : recurse_step - 1})
 

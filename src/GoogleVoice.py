@@ -5,6 +5,8 @@ import json
 from urllib import urlencode
 from httplib import HTTPSConnection
 
+ALL = re.compile('.*')
+
 class GoogleVoice(object):
     """ Class that handles retrieving new messages from Google Voice """
     def __init__(self, username, password):
@@ -91,12 +93,12 @@ class GoogleVoice(object):
         numbers = {}
 
         # Parse the JSON at the top of the page to collect phone numbers
-        ret = json.loads(resp[resp.index("<![CDATA[")+8:resp.index("]></json>")])
+        ret = json.loads(resp[resp.index("<![CDATA[")+9:resp.index("]></json>")-1])
 
         # Enumerate phone numbers of recepients in conversations, indexed by
         # the ID of the conversation
-        for key in ret[0]['messages'].keys():
-            numbers[key] = ret[0]['messages'][key]['phoneNumber']
+        for key in ret['messages'].keys():
+            numbers[key] = ret['messages'][key]['phoneNumber']
 
         # Now skip over that part into the real content
         resp = resp[resp.index("<div"):]
@@ -105,7 +107,7 @@ class GoogleVoice(object):
         soup = BeautifulSoup.BeautifulSoup(resp)
 
         # Iterate over all conversations in the inbox
-        for i in soup.findAll('div', {"id" : re.compile(".*")}):
+        for i in soup.findAll('div', {"id" : ALL}):
             message_list = list()
 
             # Iterate over all messages in current conversation
