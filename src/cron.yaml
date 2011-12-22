@@ -1,4 +1,1 @@
 cron:
-- description: SMS polling
-  url: /cron
-  schedule: every 1 minutes

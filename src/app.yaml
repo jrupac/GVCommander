@@ -6,11 +6,10 @@ threadsafe: false
 
 inbound_services:
 - xmpp_message
+- mail
 
 handlers:
+- url: /_ah/mail/.+
+  script: main.py
 - url: /_ah/xmpp/message/chat/.*
-  script: main.py
-- url: /cron
-  script: main.py
-- url: /worker
   script: main.py
